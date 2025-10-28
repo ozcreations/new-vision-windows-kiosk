@@ -62,6 +62,15 @@ const state = {
   sessionToken: null,
 };
 
+const CONFIG = window.__KIOSK_CONFIG || {};
+const GOOGLE_MAPS_API_KEY = CONFIG.googleMapsApiKey || CONFIG.googleMapsKey || "";
+const GOOGLE_MAPS_LIBRARIES = "places";
+
+const googleMapsLoader = createGoogleMapsLoader();
+let autocompleteService = null;
+let placesService = null;
+let placesServiceElement = null;
+
 const app = document.querySelector(".app");
 const screens = Array.from(document.querySelectorAll(".screen"));
 const primaryBtn = document.querySelector('[data-action="primary"]');
@@ -92,6 +101,84 @@ const contactPhone = document.getElementById("contact-phone");
 const contactEmail = document.getElementById("contact-email");
 const contactIntro = document.querySelector(".contact-intro");
 
+function createGoogleMapsLoader() {
+  let promise = null;
+  return {
+    load() {
+      if (window.google?.maps?.places) {
+        return Promise.resolve(window.google.maps);
+      }
+      if (!GOOGLE_MAPS_API_KEY) {
+        return Promise.reject(new Error("Missing Google Maps API key"));
+      }
+      if (!promise) {
+        promise = new Promise((resolve, reject) => {
+          const callbackName = `__googleMapsReady_${Date.now()}`;
+          window[callbackName] = () => {
+            resolve(window.google.maps);
+            delete window[callbackName];
+          };
+          const script = document.createElement("script");
+          script.src =
+            `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
+              GOOGLE_MAPS_API_KEY
+            )}&libraries=${encodeURIComponent(GOOGLE_MAPS_LIBRARIES)}&callback=${callbackName}`;
+          script.async = true;
+          script.defer = true;
+          script.onerror = () => {
+            delete window[callbackName];
+            reject(new Error("Failed to load Google Maps JavaScript API"));
+          };
+          document.head.appendChild(script);
+        }).catch((error) => {
+          promise = null;
+          throw error;
+        });
+      }
+      return promise;
+    },
+  };
+}
+
+async function getAutocompleteService() {
+  await googleMapsLoader.load();
+  if (!window.google?.maps?.places) {
+    throw new Error("Google Maps Places library unavailable");
+  }
+  if (!autocompleteService) {
+    autocompleteService = new window.google.maps.places.AutocompleteService();
+  }
+  return autocompleteService;
+}
+
+async function getPlacesService() {
+  await googleMapsLoader.load();
+  if (!window.google?.maps?.places) {
+    throw new Error("Google Maps Places library unavailable");
+  }
+  if (!placesServiceElement) {
+    placesServiceElement = document.createElement("div");
+  }
+  if (!placesService) {
+    placesService = new window.google.maps.places.PlacesService(placesServiceElement);
+  }
+  return placesService;
+}
+
+function getPlacesStatusConstants() {
+  return window.google?.maps?.places?.PlacesServiceStatus || {};
+}
+
+function getSessionToken() {
+  if (!window.google?.maps?.places?.AutocompleteSessionToken) {
+    return null;
+  }
+  if (!state.sessionToken) {
+    state.sessionToken = new window.google.maps.places.AutocompleteSessionToken();
+  }
+  return state.sessionToken;
+}
+
 function goto(screen, data) {
   if (!SCREENS.includes(screen)) return;
   app.dataset.screen = screen;
@@ -104,7 +191,7 @@ function goto(screen, data) {
   }
   if (screen === "address") {
     resetSessionToken();
-    ensureSessionToken();
+    googleMapsLoader.load().catch((error) => console.warn(error));
     state.predictions = [];
     renderAutocomplete();
   }
@@ -211,16 +298,6 @@ function debounce(fn, wait = 200) {
   };
 }
 
-function ensureSessionToken() {
-  if (state.sessionToken) return state.sessionToken;
-  if (window.crypto?.randomUUID) {
-    state.sessionToken = window.crypto.randomUUID();
-  } else {
-    state.sessionToken = Math.random().toString(36).slice(2);
-  }
-  return state.sessionToken;
-}
-
 function resetSessionToken() {
   state.sessionToken = null;
 }
@@ -228,30 +305,87 @@ function resetSessionToken() {
 const api = {
   async autocomplete(input) {
     if (!input || input.length < 3) return [];
-    const params = new URLSearchParams({ input: input.trim() });
-    const token = ensureSessionToken();
-    if (token) {
-      params.set("sessionToken", token);
-    }
-    const response = await fetch(`/api/autocomplete?${params.toString()}`);
-    if (!response.ok) throw new Error('Autocomplete failed');
-    const data = await response.json();
-    return data.predictions || [];
+    const service = await getAutocompleteService();
+    const token = getSessionToken();
+    return new Promise((resolve, reject) => {
+      const request = {
+        input: input.trim(),
+        componentRestrictions: { country: "us" },
+        types: ["address"],
+      };
+      if (token) {
+        request.sessionToken = token;
+      }
+      service.getPlacePredictions(request, (predictions, status) => {
+        const statuses = getPlacesStatusConstants();
+        if (status === statuses.OK) {
+          resolve(predictions || []);
+        } else if (status === statuses.ZERO_RESULTS) {
+          resolve([]);
+        } else {
+          reject(new Error(`Places autocomplete error: ${status}`));
+        }
+      });
+    });
   },
   async placeDetails(placeId) {
-    const response = await fetch(`/api/place-details?placeId=${encodeURIComponent(placeId)}`);
-    if (!response.ok) throw new Error('Place lookup failed');
-    return response.json();
+    if (!placeId) {
+      throw new Error("Missing placeId");
+    }
+    const service = await getPlacesService();
+    const token = getSessionToken();
+    return new Promise((resolve, reject) => {
+      const request = {
+        placeId,
+        fields: ["formatted_address", "address_component", "geometry", "place_id"],
+      };
+      if (token) {
+        request.sessionToken = token;
+      }
+      service.getDetails(request, (result, status) => {
+        const statuses = getPlacesStatusConstants();
+        if (status !== statuses.OK || !result) {
+          reject(new Error(`Place details error: ${status}`));
+          return;
+        }
+        const components = result.address_components || result.address_component;
+        const location = result.geometry?.location;
+        const lat = typeof location?.lat === "function" ? location.lat() : location?.lat ?? null;
+        const lng = typeof location?.lng === "function" ? location.lng() : location?.lng ?? null;
+        resolve({
+          place_id: result.place_id,
+          formatted_address: result.formatted_address,
+          zip: extractComponent(components, "postal_code"),
+          city: extractComponent(components, "locality"),
+          state: extractComponent(components, "administrative_area_level_1"),
+          location: {
+            lat: typeof lat === "number" ? lat : null,
+            lng: typeof lng === "number" ? lng : null,
+          },
+        });
+      });
+    });
   },
   async quote(params) {
-    const query = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === "") return;
-      query.append(key, typeof value === "number" ? value.toString() : value);
-    });
-    const response = await fetch(`/api/quote?${query.toString()}`);
-    if (!response.ok) throw new Error(await response.text());
-    return response.json();
+    const payload = normalizeQuotePayload(params);
+    let housing = null;
+    if (payload.zip) {
+      try {
+        housing = await fetchHousingStats(payload.zip);
+      } catch (error) {
+        console.warn("Housing lookup failed", error);
+      }
+    }
+    const analysis = buildAnalysisFromPayload(payload);
+    const quote = buildQuote({ housing, analysis, zip: payload.zip });
+    const media = {};
+    if (payload.lat != null && payload.lng != null) {
+      const mapUrl = buildStaticMapUrl(payload.lat, payload.lng, payload.zoom);
+      if (mapUrl) media.map = mapUrl;
+      const streetUrl = buildStreetViewImageUrl(payload.lat, payload.lng);
+      if (streetUrl) media.street = streetUrl;
+    }
+    return { housing, analysis, quote, media };
   },
 };
 
@@ -357,10 +491,14 @@ function updatePreview(place) {
   badge.textContent = place.formatted_address || state.selectedPrediction?.description;
   previewMap.appendChild(badge);
 
+  const mapUrl = buildStaticMapUrl(location.lat, location.lng, 18);
+  if (!mapUrl) {
+    showPreviewError();
+    return;
+  }
   const img = new Image();
-  const mapUrl = `/api/maps/static?lat=${location.lat}&lng=${location.lng}&zoom=18`;
   img.alt = "Map preview";
-  img.src = mapUrl;
+  img.src = `${mapUrl}&cacheBust=${Date.now()}`;
   img.onload = () => {
     previewMap.classList.remove("loading");
     previewMap.style.backgroundImage = `url(${mapUrl})`;
@@ -638,9 +776,352 @@ function buildWindowMixParts(windowTypes) {
     .map((key) => `${WINDOW_TYPE_LABELS[key]} ×${windowTypes[key]}`);
 }
 
+function normalizeQuotePayload(params = {}) {
+  const normalized = { ...params };
+  const lat = Number(params.lat);
+  normalized.lat = Number.isFinite(lat) ? lat : null;
+  const lng = Number(params.lng);
+  normalized.lng = Number.isFinite(lng) ? lng : null;
+  const zoom = Number(params.zoom);
+  normalized.zoom = Number.isFinite(zoom) ? zoom : undefined;
+  const zip = typeof params.zip === "string" ? params.zip.trim() : "";
+  normalized.zip = /^\d{5}$/.test(zip) ? zip : null;
+  return normalized;
+}
+
+async function fetchHousingStats(zip) {
+  if (!zip || !/^\d{5}$/.test(zip)) return null;
+  const apiUrl = new URL("https://api.census.gov/data/2021/acs/acs5");
+  apiUrl.searchParams.set(
+    "get",
+    [
+      "NAME",
+      "B25035_001E",
+      "B25077_001E",
+      "B25024_002E",
+      "B25024_003E",
+      "B25024_004E",
+      "B25119_001E",
+      "B25034_001E",
+      "B25034_010E",
+      "B25034_011E",
+      "B25034_012E",
+      "B25034_013E",
+      "B25034_014E",
+    ].join(",")
+  );
+  apiUrl.searchParams.set("for", `zip code tabulation area:${zip}`);
+
+  const response = await fetch(apiUrl.toString());
+  if (!response.ok) {
+    throw new Error(`Census API error: ${response.status}`);
+  }
+  const data = await response.json();
+  if (!Array.isArray(data) || data.length < 2) return null;
+
+  const values = data[1];
+  const totalUnits = toNumber(values[7]);
+  const olderUnits =
+    toNumber(values[8]) +
+    toNumber(values[9]) +
+    toNumber(values[10]) +
+    toNumber(values[11]) +
+    toNumber(values[12]);
+  const detached = toNumber(values[3]);
+  const attached = toNumber(values[4]);
+  const smallMulti = toNumber(values[5]);
+
+  return {
+    label: values[0],
+    zip,
+    medianYearBuilt: toNumber(values[1]),
+    medianHomeValue: toNumber(values[2]),
+    detachedShare: totalUnits ? detached / totalUnits : null,
+    attachedShare: totalUnits ? attached / totalUnits : null,
+    smallMultiShare: totalUnits ? smallMulti / totalUnits : null,
+    medianRooms: toNumber(values[6]),
+    olderHomeShare: totalUnits && olderUnits ? olderUnits / totalUnits : null,
+  };
+}
+
+function buildAnalysisFromPayload(payload = {}) {
+  const analysis = {};
+  const windowCount = toNumber(payload.windowCount);
+  if (windowCount > 0) {
+    analysis.windowCount = clampValue(Math.round(windowCount), 6, 64);
+  }
+  const floors = toNumber(payload.floors);
+  if (floors > 0) {
+    analysis.estimatedFloors = clampValue(Math.round(floors), 1, 5);
+  }
+  const columns = toNumber(payload.columns);
+  if (columns > 0) {
+    analysis.estimatedColumns = clampValue(Math.round(columns), 2, 12);
+  }
+  const glassFactor = Number(payload.glassFactor);
+  if (Number.isFinite(glassFactor) && glassFactor > 0) {
+    analysis.glassFactor = Number(clampValue(glassFactor, 0, 1).toFixed(2));
+  }
+  const brightness = Number(payload.brightness);
+  if (Number.isFinite(brightness) && brightness > 0) {
+    analysis.brightness = Number(clampValue(brightness, 0, 255).toFixed(2));
+  }
+
+  const windowTypesParam = payload.windowTypes;
+  if (windowTypesParam) {
+    let parsed;
+    if (typeof windowTypesParam === "string") {
+      try {
+        parsed = JSON.parse(windowTypesParam);
+      } catch (error) {
+        console.warn("Unable to parse windowTypes payload", error);
+      }
+    } else if (typeof windowTypesParam === "object") {
+      parsed = windowTypesParam;
+    }
+    if (parsed) {
+      const normalized = {};
+      let total = 0;
+      WINDOW_TYPE_KEYS.forEach((key) => {
+        const value = Math.max(0, Math.round(toNumber(parsed[key])));
+        if (value > 0) {
+          normalized[key] = value;
+          total += value;
+        }
+      });
+      if (total > 0) {
+        analysis.windowTypes = normalized;
+      }
+    }
+  }
+
+  if (payload.windowConfidence != null) {
+    const confidence = Number(payload.windowConfidence);
+    if (Number.isFinite(confidence) && confidence > 0) {
+      analysis.windowConfidence = Number(clampValue(confidence, 0, 1).toFixed(2));
+    }
+  }
+
+  return Object.keys(analysis).length ? analysis : null;
+}
+
+function buildQuote({ housing, analysis, zip }) {
+  const floorsFromImage = analysis?.estimatedFloors;
+  const floorsFromHousing = inferStoriesFromHousing(housing);
+  const stories = floorsFromImage || floorsFromHousing || 2;
+
+  let totalWindows = analysis?.windowCount || estimateWindowsFromHousing(housing, stories);
+  totalWindows = clampValue(Math.round(totalWindows), 8, 48);
+
+  const mix = determineWindowMix(totalWindows, { housing, analysis });
+  const multiplier = computeMultiplier({ housing, analysis, zip, totalWindows, stories });
+
+  let lineItems = [
+    createLineItem("Double-Hung", mix.doubleHung, 685, multiplier, "dw"),
+    createLineItem("Casement", mix.casement, 895, multiplier * 1.05, "cs"),
+    createLineItem("Slider", mix.slider, 735, multiplier, "sl"),
+    createLineItem("Picture", mix.picture, 960, multiplier * 1.08, "pc"),
+    createLineItem("Bay/Bow", mix.bay, 2725, multiplier * 1.15, "bb"),
+  ].filter((item) => item.quantity > 0);
+
+  let assigned = lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  if (lineItems.length && assigned !== totalWindows) {
+    const diff = totalWindows - assigned;
+    const primaryIndex = lineItems.findIndex((item) => item.type === "Double-Hung");
+    const target = lineItems[primaryIndex >= 0 ? primaryIndex : 0];
+    target.quantity = Math.max(0, target.quantity + diff);
+    target.total = Math.round(target.unitPrice * target.quantity);
+    lineItems = lineItems.filter((item) => item.quantity > 0);
+    assigned = lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  }
+
+  assigned = lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  if (assigned > 0) {
+    totalWindows = assigned;
+  }
+
+  const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
+  const priceLow = Math.round(subtotal * 0.92);
+  const priceHigh = Math.round(subtotal * 1.09);
+
+  return {
+    totalWindows,
+    priceLow,
+    priceHigh,
+    multiplier,
+    lineItems,
+  };
+}
+
+function inferStoriesFromHousing(housing) {
+  if (!housing) return null;
+  if (housing.smallMultiShare && housing.smallMultiShare > 0.15) {
+    return 3;
+  }
+  if (housing.attachedShare && housing.attachedShare > 0.2) {
+    return 2;
+  }
+  return 2;
+}
+
+function estimateWindowsFromHousing(housing, stories) {
+  const baselineRooms = housing?.medianRooms || 7.2;
+  const roomFactor = baselineRooms * 1.5;
+  const storyFactor = stories * 4.5;
+  const olderBonus = housing?.olderHomeShare ? housing.olderHomeShare * 6 : 0;
+  const detachedBonus = housing?.detachedShare ? housing.detachedShare * 3 : 0;
+  return roomFactor + storyFactor + olderBonus + detachedBonus;
+}
+
+function determineWindowMix(totalWindows, { housing, analysis }) {
+  let doubleHungRatio = 0.52;
+  let casementRatio = 0.18;
+  let sliderRatio = 0.12;
+  let pictureRatio = 0.1;
+  let bayRatio = 0.08;
+
+  if (housing?.olderHomeShare) {
+    doubleHungRatio += housing.olderHomeShare * 0.25;
+    pictureRatio += housing.olderHomeShare * 0.05;
+  }
+
+  if (housing?.attachedShare) {
+    sliderRatio += housing.attachedShare * 0.15;
+    bayRatio -= housing.attachedShare * 0.05;
+  }
+
+  if (analysis?.glassFactor) {
+    const glass = analysis.glassFactor;
+    casementRatio += glass * 0.12;
+    pictureRatio += glass * 0.08;
+    doubleHungRatio -= glass * 0.1;
+  }
+
+  const ratios = [doubleHungRatio, casementRatio, sliderRatio, pictureRatio, bayRatio];
+  const normalized = normalizeRatios(ratios);
+
+  const allocations = normalized.map((ratio) => Math.max(1, Math.round(totalWindows * ratio)));
+  const counts = {
+    doubleHung: allocations[0],
+    casement: allocations[1],
+    slider: allocations[2],
+    picture: allocations[3],
+    bay: allocations[4],
+  };
+
+  if (analysis?.windowTypes) {
+    const detectionCounts = WINDOW_TYPE_KEYS.map((key) => Math.max(0, toNumber(analysis.windowTypes[key])));
+    const detectionTotal = detectionCounts.reduce((sum, value) => sum + value, 0);
+    if (detectionTotal > 0) {
+      const confidence = clampValue(
+        typeof analysis.windowConfidence === "number" ? analysis.windowConfidence : 0.75,
+        0,
+        1
+      );
+      const scale = totalWindows / detectionTotal;
+      WINDOW_TYPE_KEYS.forEach((key, index) => {
+        const baseline = counts[key];
+        const detectionValue = detectionCounts[index] * scale;
+        const blended = baseline * (1 - confidence) + detectionValue * confidence;
+        counts[key] = Math.max(0, Math.round(blended));
+      });
+    }
+  }
+
+  let assigned = WINDOW_TYPE_KEYS.reduce((sum, key) => sum + counts[key], 0);
+  if (assigned > totalWindows) {
+    let diff = assigned - totalWindows;
+    const adjustableKeys = [...WINDOW_TYPE_KEYS].sort((a, b) => counts[b] - counts[a]);
+    for (const key of adjustableKeys) {
+      if (diff <= 0) break;
+      const minAllowed = key === "doubleHung" ? 2 : 0;
+      const available = Math.max(0, counts[key] - minAllowed);
+      if (available <= 0) continue;
+      const reduction = Math.min(available, diff);
+      counts[key] -= reduction;
+      diff -= reduction;
+    }
+  } else if (assigned < totalWindows) {
+    counts.doubleHung += totalWindows - assigned;
+  }
+
+  return counts;
+}
+
+function normalizeRatios(ratios) {
+  const total = ratios.reduce((sum, value) => sum + value, 0) || 1;
+  return ratios.map((value) => value / total);
+}
+
+function computeMultiplier({ housing, analysis, zip, totalWindows, stories }) {
+  let multiplier = 1;
+
+  if (housing?.medianHomeValue) {
+    const baseline = 420000;
+    const diff = housing.medianHomeValue - baseline;
+    multiplier += clampValue(diff / 900000, -0.08, 0.12);
+  }
+
+  if (housing?.medianYearBuilt) {
+    if (housing.medianYearBuilt < 1960) {
+      multiplier += 0.06;
+    } else if (housing.medianYearBuilt > 2005) {
+      multiplier -= 0.03;
+    }
+  }
+
+  if (housing?.olderHomeShare) {
+    multiplier += clampValue(housing.olderHomeShare * 0.08, 0, 0.08);
+  }
+
+  if (analysis?.estimatedFloors && analysis.estimatedFloors >= 3) {
+    multiplier += 0.05;
+  }
+
+  if (totalWindows > 28) {
+    multiplier += 0.04;
+  }
+
+  if (zip) {
+    if (/^07[7-9]/.test(zip)) {
+      multiplier += 0.05;
+    } else if (/^08[0-9]/.test(zip)) {
+      multiplier += 0.02;
+    } else if (/^070/.test(zip)) {
+      multiplier += 0.01;
+    }
+  }
+
+  return Number(clampValue(multiplier, 0.85, 1.35).toFixed(2));
+}
+
+function createLineItem(type, quantity, baseUnit, multiplier, icon) {
+  const unitPrice = Math.round(baseUnit * multiplier);
+  return {
+    type,
+    quantity,
+    unitPrice,
+    total: Math.round(unitPrice * quantity),
+    icon,
+  };
+}
+
+function toNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractComponent(components, type) {
+  if (!Array.isArray(components)) return null;
+  const match = components.find((component) => component.types?.includes(type));
+  if (!match) return null;
+  return match.long_name || match.short_name || null;
+}
+
 async function analyzeStreetImagery(lat, lng) {
   try {
-    const url = buildStreetViewUrl(lat, lng);
+    const url = buildStreetViewImageUrl(lat, lng);
+    if (!url) return null;
     const metrics = await inspectStreetView(url);
     return { ...metrics, url };
   } catch (error) {
@@ -649,14 +1130,36 @@ async function analyzeStreetImagery(lat, lng) {
   }
 }
 
-function buildStreetViewUrl(lat, lng) {
+function buildStreetViewImageUrl(lat, lng, options = {}) {
+  if (!GOOGLE_MAPS_API_KEY) return null;
+  if (lat == null || lng == null) return null;
   const params = new URLSearchParams({
-    lat: lat.toString(),
-    lng: lng.toString(),
-    heading: "220",
-    pitch: "4",
+    size: "640x640",
+    location: `${lat},${lng}`,
+    heading: options.heading != null ? String(options.heading) : "220",
+    pitch: options.pitch != null ? String(options.pitch) : "4",
+    fov: options.fov != null ? String(options.fov) : "75",
+    key: GOOGLE_MAPS_API_KEY,
   });
-  return `/api/maps/streetview?${params.toString()}`;
+  if (options.source) {
+    params.set("source", options.source);
+  }
+  return `https://maps.googleapis.com/maps/api/streetview?${params.toString()}`;
+}
+
+function buildStaticMapUrl(lat, lng, zoom = 18) {
+  if (!GOOGLE_MAPS_API_KEY) return null;
+  if (lat == null || lng == null) return null;
+  const params = new URLSearchParams({
+    center: `${lat},${lng}`,
+    zoom: zoom != null ? String(zoom) : "18",
+    size: "640x640",
+    scale: "2",
+    maptype: "satellite",
+    markers: `color:0xA3E635|${lat},${lng}`,
+    key: GOOGLE_MAPS_API_KEY,
+  });
+  return `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`;
 }
 
 function loadStreetViewImage(url) {
@@ -1065,7 +1568,11 @@ function setupEvents() {
 
 function init() {
   setupEvents();
-  ensureSessionToken();
+  if (GOOGLE_MAPS_API_KEY) {
+    googleMapsLoader.load().catch((error) => console.warn(error));
+  } else {
+    console.warn("Google Maps API key not provided. Address search will be limited.");
+  }
   goto("intro");
   populateQuote();
   updatePreview();

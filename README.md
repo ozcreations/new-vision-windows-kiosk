@@ -12,42 +12,37 @@ This project powers the New Vision Windows interactive kiosk. Visitors can enter
 
 ## Prerequisites
 
-The kiosk now calls live services to avoid stubbed data. Create a `.env` file (see `.env.example`) and provide the following key:
+The kiosk calls live Google Maps services directly from the browser. Provide a Google Maps JavaScript API key that also has access to the Static Maps and Street View Static APIs:
 
-- `GOOGLE_MAPS_API_KEY` – Google Cloud key with Places API, Maps Static API, and Street View Static API enabled.
+1. Copy `config.example.js` to `config.js`.
+2. Replace the `googleMapsApiKey` value with your key (restrict it to the kiosk domain before deployment).
 
-> **Provided key:** To mirror the showroom setup quickly you can drop `GOOGLE_MAPS_API_KEY=AIzaSyB9HHRSZCKk385rKpI1Kq17QYDpnAMtqhY` into your `.env`. Update the value with your own restricted key before deploying publicly.
-
-> **Tip:** Restrict both keys to your expected origin(s) to prevent unauthorized use.
+> **Provided sample key:** `AIzaSyB9HHRSZCKk385rKpI1Kq17QYDpnAMtqhY` mirrors the showroom configuration. Swap in your own restricted key for production use.
 
 ## Local Development
 
-1. Copy `.env.example` to `.env` and add your API keys.
-2. Install dependencies, then start the kiosk server:
+Serve the repo as static files so the browser can load `index.html` and companion assets. Any static server works; for example:
 
-   ```bash
-   npm install
-   node server.js
-   ```
+```bash
+npx serve .
+```
 
-3. Visit [http://localhost:4173](http://localhost:4173) in a browser. The server proxies all external requests to avoid CORS issues when running locally.
-
-The experience is optimized for a 1080×1920 portrait display but will scale down responsively for desktop debugging.
+Then open the printed localhost URL (defaults to [http://localhost:3000](http://localhost:3000)) in a browser. The experience is optimized for a 1080×1920 portrait display but scales responsively for desktop debugging.
 
 ## Deployment Notes
 
-- Deploy the Node server alongside the static assets so API keys remain server-side.
-- Ensure outbound HTTPS access for Google Maps (Places, Maps Static, Street View) and the public U.S. Census API.
+- Host the static files behind HTTPS with the `config.js` file present on the same origin.
+- Ensure outbound HTTPS access for Google Maps (Places, Static Maps, Street View) and the U.S. Census ACS API.
 - Idle reset returns the experience to the intro screen after 30 seconds of inactivity to keep the kiosk ready for the next visitor.
 
 ## Troubleshooting
 
-- **Autocomplete or imagery fails:** Confirm the Google key is active and the required APIs are enabled. Check the server logs for Google error payloads.
+- **Autocomplete or imagery fails:** Confirm the Google key is active, unrestricted for the current origin, and the required APIs are enabled. Browser devtools will surface any quota or key errors returned by Google.
 - **Housing insights missing:** The kiosk uses the [U.S. Census ACS 5-year API](https://www.census.gov/data/developers/data-sets/acs-5year.html) for New Jersey ZIP tabulation areas. Confirm the ZIP is valid; if the API is unavailable the experience falls back to statewide norms.
-- **Imagery analysis stalled:** The kiosk loads Street View imagery through the local proxy and inspects it with OpenCV.js in the browser. Ensure the Google key has Street View Static API enabled, the kiosk is served from the same origin (so the imagery is CORS-accessible), and the `https://docs.opencv.org/4.x/opencv.js` asset is reachable.
+- **Imagery analysis stalled:** Street View imagery is pulled straight from Google and inspected with OpenCV.js in the browser. Make sure the key has Street View Static API enabled and that you are serving the app over HTTPS so the imagery can be drawn to a canvas for analysis.
 
 ## Data sources & methodology
 
-- **Street imagery:** Google Street View Static API imagery is fetched through the kiosk proxy and analyzed in-browser with OpenCV.js. Detected window rectangles drive the window-type mix, while a grid heuristic cross-checks total counts.
+- **Street imagery:** Google Street View Static API imagery is fetched in-browser and analyzed with OpenCV.js. Detected window rectangles drive the window-type mix, while a grid heuristic cross-checks total counts.
 - **New Jersey housing data:** ZIP-level housing characteristics (median year built, room counts, detached vs. attached share, etc.) come from the U.S. Census Bureau ACS 5-year dataset and are specific to New Jersey ZIP Code Tabulation Areas.
 - **Pricing model:** The kiosk blends the image-derived window count with Census housing metrics to determine window mix, then applies localized multipliers for coastal/urban New Jersey ZIP codes.
