@@ -38,6 +38,24 @@ const CTA_CONFIG = {
   },
 };
 
+const FEATURED_ADDRESSES = [
+  "25 Maple Ave, Red Bank, NJ 07701",
+  "130 Broad St, Red Bank, NJ 07701",
+  "84 Ocean Ave, Long Branch, NJ 07740",
+  "15 White St, Red Bank, NJ 07701",
+  "101 Crawfords Corner Rd, Holmdel, NJ 07733",
+];
+
+const WINDOW_TYPE_LABELS = {
+  doubleHung: "Double-Hung",
+  casement: "Casement",
+  slider: "Slider",
+  picture: "Picture",
+  bay: "Bay/Bow",
+};
+
+const WINDOW_TYPE_KEYS = Object.keys(WINDOW_TYPE_LABELS);
+
 const state = {
   predictions: [],
   selectedPrediction: null,
@@ -49,6 +67,9 @@ const state = {
   contactPreference: null,
   analyzeInterval: null,
   idleTimer: null,
+  featuredPredictions: [],
+  autocompleteMode: "featured",
+  sessionToken: null,
 };
 
 const app = document.querySelector(".app");
@@ -90,6 +111,11 @@ function goto(screen, data) {
   configureCTA(screen, data);
   if (screen === "contact") {
     handleContactPref(data);
+  }
+  if (screen === "address") {
+    resetSessionToken();
+    ensureSessionToken();
+    showFeaturedSuggestions({ force: true });
   }
   resetIdleTimer();
 }
@@ -194,10 +220,29 @@ function debounce(fn, wait = 200) {
   };
 }
 
+function ensureSessionToken() {
+  if (state.sessionToken) return state.sessionToken;
+  if (window.crypto?.randomUUID) {
+    state.sessionToken = window.crypto.randomUUID();
+  } else {
+    state.sessionToken = Math.random().toString(36).slice(2);
+  }
+  return state.sessionToken;
+}
+
+function resetSessionToken() {
+  state.sessionToken = null;
+}
+
 const api = {
   async autocomplete(input) {
     if (!input || input.length < 3) return [];
-    const response = await fetch(`/api/autocomplete?input=${encodeURIComponent(input)}`);
+    const params = new URLSearchParams({ input: input.trim() });
+    const token = ensureSessionToken();
+    if (token) {
+      params.set("sessionToken", token);
+    }
+    const response = await fetch(`/api/autocomplete?${params.toString()}`);
     if (!response.ok) throw new Error('Autocomplete failed');
     const data = await response.json();
     return data.predictions || [];
@@ -208,27 +253,110 @@ const api = {
     return response.json();
   },
   async quote(params) {
-    const query = new URLSearchParams(params).toString();
-    const response = await fetch(`/api/quote?${query}`);
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      query.append(key, typeof value === "number" ? value.toString() : value);
+    });
+    const response = await fetch(`/api/quote?${query.toString()}`);
     if (!response.ok) throw new Error(await response.text());
     return response.json();
   },
 };
 
-const updateSuggestions = debounce(async (value) => {
-  try {
-    if (!value || value.trim().length < 3) {
-      state.predictions = [];
+let featuredLoadPromise = null;
+
+function buildStaticPrediction(address) {
+  const [main, ...rest] = address.split(',');
+  return {
+    description: address,
+    structured_formatting: {
+      main_text: main?.trim() || address,
+      secondary_text: rest.join(',').trim(),
+    },
+    featured: true,
+    needsLookup: true,
+  };
+}
+
+function buildFallbackPredictions() {
+  return FEATURED_ADDRESSES.map((address) => buildStaticPrediction(address));
+}
+
+async function preloadFeaturedAddresses() {
+  if (featuredLoadPromise) return featuredLoadPromise;
+  featuredLoadPromise = (async () => {
+    const results = [];
+    for (const address of FEATURED_ADDRESSES) {
+      try {
+        const predictions = await api.autocomplete(address);
+        const normalized = address.toLowerCase();
+        const match = predictions.find((prediction) =>
+          prediction.description?.toLowerCase()?.includes(normalized)
+        );
+        if (match) {
+          results.push({ ...match, featured: true });
+        }
+      } catch (error) {
+        console.warn('Featured address lookup failed', address, error);
+      }
+    }
+    state.featuredPredictions = results.length ? results : buildFallbackPredictions();
+    if (!addressInput.value.trim()) {
+      state.predictions = [...state.featuredPredictions];
+      state.autocompleteMode = 'featured';
       renderAutocomplete();
+    }
+  })();
+  return featuredLoadPromise;
+}
+
+async function ensurePredictionHasPlace(prediction) {
+  if (prediction.place_id) return prediction;
+  try {
+    const matches = await api.autocomplete(prediction.description);
+    const normalized = prediction.description.toLowerCase();
+    const resolved = matches.find((item) => item.description?.toLowerCase() === normalized);
+    if (resolved) {
+      return resolved;
+    }
+    return matches[0] || null;
+  } catch (error) {
+    console.warn('Unable to resolve place id', prediction, error);
+    return null;
+  }
+}
+
+function showFeaturedSuggestions({ force = false } = {}) {
+  if (!force && addressInput.value.trim()) return;
+  if (!state.featuredPredictions.length) {
+    state.featuredPredictions = buildFallbackPredictions();
+    preloadFeaturedAddresses();
+  }
+  state.predictions = [...state.featuredPredictions];
+  state.autocompleteMode = 'featured';
+  renderAutocomplete();
+}
+
+const updateSuggestions = debounce(async (value) => {
+  const trimmed = value ? value.trim() : "";
+  if (!trimmed || trimmed.length < 3) {
+    showFeaturedSuggestions({ force: true });
+    return;
+  }
+  try {
+    const predictions = await api.autocomplete(trimmed);
+    if (predictions.length) {
+      state.predictions = predictions;
+      state.autocompleteMode = "search";
+    } else {
+      showFeaturedSuggestions({ force: true });
       return;
     }
-    const predictions = await api.autocomplete(value.trim());
-    state.predictions = predictions;
     renderAutocomplete();
   } catch (error) {
     console.error(error);
-    state.predictions = [];
-    renderAutocomplete();
+    showFeaturedSuggestions({ force: true });
   }
 }, 250);
 
@@ -238,10 +366,19 @@ function renderAutocomplete() {
     autocompleteList.classList.remove("visible");
     return;
   }
+  if (state.autocompleteMode === "featured") {
+    const label = document.createElement("div");
+    label.className = "autocomplete-label";
+    label.textContent = "Popular New Jersey addresses";
+    autocompleteList.appendChild(label);
+  }
   state.predictions.slice(0, 6).forEach((prediction) => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "autocomplete-item";
+    if (prediction.featured) {
+      item.classList.add("featured");
+    }
     item.innerHTML = `
       <span class="line-1">${prediction.structured_formatting?.main_text || prediction.description}</span>
       <span class="line-2">${
@@ -257,9 +394,16 @@ function renderAutocomplete() {
 async function selectPrediction(prediction) {
   autocompleteList.classList.remove("visible");
   addressInput.value = prediction.description;
-  state.selectedPrediction = prediction;
+  const resolved = await ensurePredictionHasPlace(prediction);
+  if (!resolved?.place_id) {
+    state.selectedPrediction = null;
+    state.place = null;
+    showPreviewError();
+    return;
+  }
+  state.selectedPrediction = resolved;
   try {
-    const place = await api.placeDetails(prediction.place_id);
+    const place = await api.placeDetails(resolved.place_id);
     state.place = place;
     updatePreview(place);
   } catch (error) {
@@ -404,6 +548,12 @@ async function startAnalysis(params) {
         payload.columns = imageryMetrics.estimatedColumns;
         payload.glassFactor = imageryMetrics.glassFactor;
         payload.brightness = imageryMetrics.brightness;
+        if (imageryMetrics.windowTypes) {
+          payload.windowTypes = JSON.stringify(imageryMetrics.windowTypes);
+        }
+        if (typeof imageryMetrics.windowConfidence === "number") {
+          payload.windowConfidence = imageryMetrics.windowConfidence;
+        }
       }
     }
     const quoteResponse = await api.quote(payload);
@@ -525,6 +675,13 @@ function populateInsights() {
     if (state.analysis.glassFactor != null) {
       imageryParts.push(`${formatPercent(state.analysis.glassFactor)} façade glass`);
     }
+    const mixParts = buildWindowMixParts(state.analysis.windowTypes);
+    if (mixParts.length) {
+      imageryParts.push(`Detected mix: ${mixParts.join(', ')}`);
+    }
+    if (typeof state.analysis.windowConfidence === "number") {
+      imageryParts.push(`Confidence ${formatPercent(state.analysis.windowConfidence)}`);
+    }
     insightImageryDetail.textContent = imageryParts.join(' • ');
   } else {
     insightImageryValue.textContent = 'Imagery unavailable';
@@ -543,6 +700,16 @@ function formatCurrency(value) {
 function formatPercent(value) {
   const percent = Math.round((value || 0) * 100);
   return `${percent}%`;
+}
+
+function clampValue(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function buildWindowMixParts(windowTypes) {
+  if (!windowTypes) return [];
+  return WINDOW_TYPE_KEYS.filter((key) => typeof windowTypes[key] === "number" && windowTypes[key] > 0)
+    .map((key) => `${WINDOW_TYPE_LABELS[key]} ×${windowTypes[key]}`);
 }
 
 async function analyzeStreetImagery(lat, lng) {
@@ -566,13 +733,13 @@ function buildStreetViewUrl(lat, lng) {
   return `/api/maps/streetview?${params.toString()}`;
 }
 
-function inspectStreetView(url) {
+function loadStreetViewImage(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.decoding = "async";
     img.onload = () => {
-      const maxSize = 320;
+      const maxSize = 360;
       const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
       const width = Math.max(1, Math.round(img.width * scale));
       const height = Math.max(1, Math.round(img.height * scale));
@@ -597,11 +764,12 @@ function inspectStreetView(url) {
         grey[i] = value;
         brightnessSum += value;
       }
-      const brightness = brightnessSum / grey.length;
-      const metrics = computeWindowMetrics(grey, width, height);
       resolve({
-        ...metrics,
-        brightness: Number(brightness.toFixed(2)),
+        imageData,
+        grey,
+        width,
+        height,
+        brightness: brightnessSum / grey.length,
       });
     };
     img.onerror = () => reject(new Error("Street View imagery unavailable"));
@@ -609,7 +777,21 @@ function inspectStreetView(url) {
   });
 }
 
-function computeWindowMetrics(grey, width, height) {
+async function inspectStreetView(url) {
+  const { imageData, grey, width, height, brightness } = await loadStreetViewImage(url);
+  const gridMetrics = computeGridMetrics(grey, width, height);
+  let detection = null;
+  try {
+    detection = await detectWindowsWithOpenCv(imageData, width, height);
+  } catch (error) {
+    console.warn("OpenCV detection issue", error);
+  }
+  const combined = combineImageryMetrics(gridMetrics, detection);
+  combined.brightness = Number((brightness || 0).toFixed(2));
+  return combined;
+}
+
+function computeGridMetrics(grey, width, height) {
   const gridCols = 6;
   const gridRows = 6;
   const cellWidth = Math.max(3, Math.floor(width / gridCols));
@@ -674,6 +856,206 @@ function computeWindowMetrics(grey, width, height) {
     windowCount,
     glassFactor: Number(glassFactor.toFixed(2)),
   };
+}
+
+let openCvReadyPromise = null;
+
+function ensureOpenCvReady() {
+  if (window.cv && typeof window.cv.imread === "function") {
+    return Promise.resolve();
+  }
+  if (!openCvReadyPromise) {
+    openCvReadyPromise = new Promise((resolve, reject) => {
+      const start = performance.now();
+      const check = () => {
+        if (window.cv && typeof window.cv.imread === "function") {
+          resolve();
+          return;
+        }
+        if (performance.now() - start > 15000) {
+          reject(new Error("OpenCV failed to initialize"));
+          return;
+        }
+        requestAnimationFrame(check);
+      };
+      check();
+    }).catch((error) => {
+      openCvReadyPromise = null;
+      throw error;
+    });
+  }
+  return openCvReadyPromise;
+}
+
+async function detectWindowsWithOpenCv(imageData, width, height) {
+  await ensureOpenCvReady();
+  if (!window.cv) return null;
+  const cv = window.cv;
+  const imageArea = width * height;
+  const src = cv.matFromImageData(imageData);
+  const rgb = new cv.Mat();
+  cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+  const gray = new cv.Mat();
+  cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
+  const clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+  const equalized = new cv.Mat();
+  clahe.apply(gray, equalized);
+  const blurred = new cv.Mat();
+  cv.GaussianBlur(equalized, blurred, new cv.Size(5, 5), 0);
+  const edges = new cv.Mat();
+  cv.Canny(blurred, edges, 60, 150);
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+  cv.dilate(edges, edges, kernel);
+  cv.erode(edges, edges, kernel);
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  const rectangles = [];
+  for (let i = 0; i < contours.size(); i += 1) {
+    const contour = contours.get(i);
+    const rect = cv.boundingRect(contour);
+    contour.delete();
+    const area = rect.width * rect.height;
+    if (area < imageArea * 0.0015 || area > imageArea * 0.25) continue;
+    if (rect.width < 14 || rect.height < 14) continue;
+    const aspect = rect.width / rect.height;
+    if (aspect < 0.35 || aspect > 5.0) continue;
+    const duplicate = rectangles.some((existing) => intersectionOverUnion(existing, rect) > 0.4);
+    if (duplicate) continue;
+    rectangles.push({ ...rect, aspect });
+  }
+
+  clahe.delete();
+  kernel.delete();
+  edges.delete();
+  blurred.delete();
+  equalized.delete();
+  gray.delete();
+  rgb.delete();
+  src.delete();
+  hierarchy.delete();
+  contours.delete();
+
+  if (rectangles.length < 2) {
+    return null;
+  }
+
+  const coverageArea = rectangles.reduce((sum, rect) => sum + rect.width * rect.height, 0);
+  const glassFactor = clampValue(coverageArea / imageArea, 0, 1);
+
+  const typeCounts = {
+    doubleHung: 0,
+    casement: 0,
+    slider: 0,
+    picture: 0,
+    bay: 0,
+  };
+
+  rectangles.forEach((rect) => {
+    const type = classifyWindowType(rect);
+    if (typeCounts[type] != null) {
+      typeCounts[type] += 1;
+    }
+  });
+
+  const estimatedFloors = clampValue(Math.round(estimateBandCount(rectangles, 'y', height)), 1, 5);
+  const estimatedColumns = clampValue(Math.round(estimateBandCount(rectangles, 'x', width)), 2, 12);
+  const rawCount = rectangles.length;
+  const coverage = coverageArea / (imageArea || 1);
+  let confidence = 0.45 + coverage * 0.5 + Math.min(rawCount, 24) / 120;
+  if (rawCount < 4) {
+    confidence *= 0.7;
+  }
+  const windowConfidence = Number(clampValue(confidence, 0.25, 0.95).toFixed(2));
+
+  return {
+    rawCount,
+    estimatedFloors,
+    estimatedColumns,
+    glassFactor: Number(glassFactor.toFixed(2)),
+    windowTypes: typeCounts,
+    windowConfidence,
+  };
+}
+
+function combineImageryMetrics(grid, detection) {
+  const combined = { ...grid };
+  if (detection) {
+    const detectionEstimate = Math.max(
+      Math.round(detection.rawCount * 1.35),
+      detection.estimatedFloors * detection.estimatedColumns * 1.8
+    );
+    const fallbackEstimate = Math.max(
+      grid.windowCount,
+      grid.estimatedFloors * grid.estimatedColumns * 2
+    );
+    combined.windowCount = clampValue(
+      Math.round(detectionEstimate * 0.6 + fallbackEstimate * 0.4),
+      6,
+      64
+    );
+    combined.estimatedFloors = detection.estimatedFloors || grid.estimatedFloors;
+    combined.estimatedColumns = detection.estimatedColumns || grid.estimatedColumns;
+    if (typeof detection.glassFactor === "number") {
+      combined.glassFactor = detection.glassFactor;
+    }
+    if (detection.windowTypes) {
+      combined.windowTypes = detection.windowTypes;
+    }
+    combined.windowConfidence = detection.windowConfidence;
+    combined.detectionCount = detection.rawCount;
+  } else {
+    combined.windowConfidence = 0.35;
+  }
+  combined.glassFactor = Number(clampValue(combined.glassFactor ?? 0, 0, 1).toFixed(2));
+  return combined;
+}
+
+function estimateBandCount(rectangles, axis, dimension) {
+  if (!rectangles.length) {
+    return axis === 'y' ? 1 : 2;
+  }
+  const centers = rectangles
+    .map((rect) => (axis === 'y' ? rect.y + rect.height / 2 : rect.x + rect.width / 2))
+    .sort((a, b) => a - b);
+  const averageSize =
+    rectangles.reduce(
+      (sum, rect) => sum + (axis === 'y' ? rect.height : rect.width),
+      0
+    ) / rectangles.length || (axis === 'y' ? dimension / 3 : dimension / 4);
+  const threshold = Math.max(averageSize * 1.2, dimension * 0.08);
+  const groups = [];
+  centers.forEach((value) => {
+    const current = groups[groups.length - 1];
+    if (!current || value - current.center > threshold) {
+      groups.push({ center: value, count: 1 });
+    } else {
+      current.count += 1;
+      current.center = (current.center * (current.count - 1) + value) / current.count;
+    }
+  });
+  return groups.length || (axis === 'y' ? 1 : 2);
+}
+
+function classifyWindowType(rect) {
+  const aspect = rect.width / rect.height;
+  if (aspect >= 2.6) return 'bay';
+  if (aspect >= 1.6) return 'slider';
+  if (aspect >= 1.1) return 'picture';
+  if (aspect <= 0.6) return 'casement';
+  return 'doubleHung';
+}
+
+function intersectionOverUnion(a, b) {
+  const x1 = Math.max(a.x, b.x);
+  const y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.width, b.x + b.width);
+  const y2 = Math.min(a.y + a.height, b.y + b.height);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  if (intersection <= 0) return 0;
+  const union = a.width * a.height + b.width * b.height - intersection;
+  return union > 0 ? intersection / union : 0;
 }
 
 function showAnalysisError(error) {
@@ -749,6 +1131,9 @@ function setupEvents() {
   });
 
   addressInput.addEventListener("focus", () => {
+    if (!addressInput.value.trim()) {
+      showFeaturedSuggestions({ force: true });
+    }
     if (state.predictions.length) {
       autocompleteList.classList.add("visible");
     }
@@ -757,6 +1142,8 @@ function setupEvents() {
 
 function init() {
   setupEvents();
+  ensureSessionToken();
+  preloadFeaturedAddresses();
   goto("intro");
   populateQuote();
   updatePreview();

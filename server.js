@@ -12,6 +12,7 @@ loadEnv();
 
 const PORT = process.env.PORT || 4173;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+const WINDOW_TYPE_KEYS = ['doubleHung', 'casement', 'slider', 'picture', 'bay'];
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -302,13 +303,29 @@ function buildQuote({ housing, analysis, zip }) {
   const mix = determineWindowMix(totalWindows, { housing, analysis });
   const multiplier = computeMultiplier({ housing, analysis, zip, totalWindows, stories });
 
-  const lineItems = [
+  let lineItems = [
     createLineItem('Double-Hung', mix.doubleHung, 685, multiplier, 'dw'),
     createLineItem('Casement', mix.casement, 895, multiplier * 1.05, 'cs'),
     createLineItem('Slider', mix.slider, 735, multiplier, 'sl'),
     createLineItem('Picture', mix.picture, 960, multiplier * 1.08, 'pc'),
     createLineItem('Bay/Bow', mix.bay, 2725, multiplier * 1.15, 'bb'),
-  ];
+  ].filter((item) => item.quantity > 0);
+
+  let assigned = lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  if (lineItems.length && assigned !== totalWindows) {
+    const diff = totalWindows - assigned;
+    const primaryIndex = lineItems.findIndex((item) => item.type === 'Double-Hung');
+    const target = lineItems[primaryIndex >= 0 ? primaryIndex : 0];
+    target.quantity = Math.max(0, target.quantity + diff);
+    target.total = Math.round(target.unitPrice * target.quantity);
+    lineItems = lineItems.filter((item) => item.quantity > 0);
+    assigned = lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  }
+
+  assigned = lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  if (assigned > 0) {
+    totalWindows = assigned;
+  }
 
   const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
   const priceLow = Math.round(subtotal * 0.92);
@@ -371,16 +388,51 @@ function determineWindowMix(totalWindows, { housing, analysis }) {
   const normalized = normalizeRatios(ratios);
 
   const allocations = normalized.map((ratio) => Math.max(1, Math.round(totalWindows * ratio)));
+  const counts = {
+    doubleHung: allocations[0],
+    casement: allocations[1],
+    slider: allocations[2],
+    picture: allocations[3],
+    bay: allocations[4],
+  };
 
-  let [doubleHung, casement, slider, picture, bay] = allocations;
-  let assigned = doubleHung + casement + slider + picture + bay;
-  if (assigned > totalWindows) {
-    doubleHung = Math.max(4, doubleHung - (assigned - totalWindows));
-  } else if (assigned < totalWindows) {
-    doubleHung += totalWindows - assigned;
+  if (analysis?.windowTypes) {
+    const detectionCounts = WINDOW_TYPE_KEYS.map((key) => Math.max(0, parseNumber(analysis.windowTypes[key])));
+    const detectionTotal = detectionCounts.reduce((sum, value) => sum + value, 0);
+    if (detectionTotal > 0) {
+      const confidence = clamp(
+        typeof analysis.windowConfidence === 'number' ? analysis.windowConfidence : 0.75,
+        0,
+        1
+      );
+      const scale = totalWindows / detectionTotal;
+      WINDOW_TYPE_KEYS.forEach((key, index) => {
+        const baseline = counts[key];
+        const detectionValue = detectionCounts[index] * scale;
+        const blended = baseline * (1 - confidence) + detectionValue * confidence;
+        counts[key] = Math.max(0, Math.round(blended));
+      });
+    }
   }
 
-  return { doubleHung, casement, slider, picture, bay };
+  let assigned = WINDOW_TYPE_KEYS.reduce((sum, key) => sum + counts[key], 0);
+  if (assigned > totalWindows) {
+    let diff = assigned - totalWindows;
+    const adjustableKeys = [...WINDOW_TYPE_KEYS].sort((a, b) => counts[b] - counts[a]);
+    for (const key of adjustableKeys) {
+      if (diff <= 0) break;
+      const minAllowed = key === 'doubleHung' ? 2 : 0;
+      const available = Math.max(0, counts[key] - minAllowed);
+      if (available <= 0) continue;
+      const reduction = Math.min(available, diff);
+      counts[key] -= reduction;
+      diff -= reduction;
+    }
+  } else if (assigned < totalWindows) {
+    counts.doubleHung += totalWindows - assigned;
+  }
+
+  return counts;
 }
 
 function normalizeRatios(ratios) {
@@ -471,6 +523,34 @@ function buildAnalysisFromQuery(params) {
   const brightness = parseNumber(params.get('brightness'));
   if (brightness > 0) {
     analysis.brightness = parseFloat(clamp(brightness, 0, 255).toFixed(2));
+  }
+  const windowTypesParam = params.get('windowTypes');
+  if (windowTypesParam) {
+    try {
+      const parsed = JSON.parse(windowTypesParam);
+      const normalized = {};
+      let total = 0;
+      WINDOW_TYPE_KEYS.forEach((key) => {
+        const value = parseNumber(parsed[key]);
+        if (value > 0) {
+          const rounded = Math.round(value);
+          normalized[key] = rounded;
+          total += rounded;
+        }
+      });
+      if (total > 0) {
+        analysis.windowTypes = normalized;
+      }
+    } catch (error) {
+      console.warn('Failed to parse windowTypes payload', error.message);
+    }
+  }
+  const confidenceParam = params.get('windowConfidence');
+  if (confidenceParam != null) {
+    const confidence = Number(confidenceParam);
+    if (Number.isFinite(confidence) && confidence > 0) {
+      analysis.windowConfidence = parseFloat(clamp(confidence, 0, 1).toFixed(2));
+    }
   }
   return Object.keys(analysis).length ? analysis : null;
 }
