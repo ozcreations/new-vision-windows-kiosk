@@ -142,6 +142,18 @@
             </div>
             <div class="quote-card secondary">
               <h3>Itemized estimate</h3>
+              <div class="insight-grid">
+                <div class="insight" data-insight="housing">
+                  <span class="insight-label">NJ housing data</span>
+                  <span class="insight-value" id="insight-housing-value">New Jersey baseline</span>
+                  <span class="insight-detail" id="insight-housing-detail">Pulling ACS housing profile…</span>
+                </div>
+                <div class="insight" data-insight="imagery">
+                  <span class="insight-label">Street View analysis</span>
+                  <span class="insight-value" id="insight-imagery-value">Awaiting imagery…</span>
+                  <span class="insight-detail" id="insight-imagery-detail">We detect façade patterns to count windows.</span>
+                </div>
+              </div>
               <ul class="item-list" id="item-list"></ul>
             </div>
           </div>
@@ -212,6 +224,11 @@
       </div>
     </div>
 
+    <script>
+      window.Module = window.Module || {};
+    </script>
+    <script src="config.js"></script>
+    <script defer src="https://docs.opencv.org/4.x/opencv.js"></script>
     <script src="script.js" type="module"></script>
   </body>
 </html>
