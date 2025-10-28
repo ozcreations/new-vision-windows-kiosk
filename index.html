@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>New Vision Windows – Instant Quote</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app" data-screen="intro">
+      <header class="top-bar">
+        <div class="brand">
+          <div class="logo-mark">NV</div>
+          <div class="brand-text">
+            <span class="brand-name">New Vision Windows</span>
+            <span class="brand-tag">Smart replacement estimates</span>
+          </div>
+        </div>
+        <button class="help-button" data-action="help">Help</button>
+      </header>
+
+      <main class="content">
+        <!-- Intro Screen -->
+        <section class="screen screen-intro" data-screen="intro">
+          <div class="hero-card">
+            <div class="hero-media">
+              <div class="hero-image">
+                <div class="pin-animation">
+                  <span class="pin-head"></span>
+                  <span class="pin-tail"></span>
+                </div>
+              </div>
+            </div>
+            <div class="hero-copy">
+              <h1>Instant Window Quote</h1>
+              <p>
+                We analyze your home and zip to estimate a full replacement—fast.
+              </p>
+              <ul class="hero-bullets">
+                <li>No sales pressure</li>
+                <li>Transparent pricing</li>
+                <li>Local pros</li>
+              </ul>
+            </div>
+          </div>
+          <p class="hero-footer-note">
+            No sales pressure • Transparent pricing • Local pros
+          </p>
+        </section>
+
+        <!-- Address Screen -->
+        <section class="screen screen-address" data-screen="address">
+          <div class="address-layout">
+            <div class="address-copy">
+              <h2>What’s your address?</h2>
+              <p class="address-sub">
+                Enter your street address so we can locate your home.
+              </p>
+              <div class="input-group">
+                <label class="sr-only" for="address-input">Street address</label>
+                <input
+                  id="address-input"
+                  type="text"
+                  placeholder="e.g., 25 Maple Ave, Red Bank, NJ 07701"
+                  autocomplete="off"
+                />
+                <div class="autocomplete-list" id="autocomplete"></div>
+                <small class="input-hint"
+                  >We use public map & street imagery. No commitment.</small
+                >
+              </div>
+              <div class="zip-toggle">
+                <button class="link-button" data-action="zip-only">Try ZIP only</button>
+                <div class="zip-input hidden" id="zip-input-wrap">
+                  <label class="sr-only" for="zip-input">ZIP code</label>
+                  <input
+                    id="zip-input"
+                    type="tel"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    maxlength="5"
+                    placeholder="Enter ZIP"
+                  />
+                  <button class="chip" data-action="fill-sample">Use 07701</button>
+                </div>
+              </div>
+            </div>
+            <div class="address-preview">
+              <div class="preview-card">
+                <div class="preview-map" id="preview-map">Preview</div>
+                <p class="preview-note">
+                  Street view and imagery appear once we find your home.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Analyzing Screen -->
+        <section class="screen screen-analyzing" data-screen="analyzing">
+          <div class="analyze-card">
+            <div class="analyze-media" id="analyze-media"></div>
+            <div class="analyze-header">
+              <h2 id="analyze-address">Locating address…</h2>
+              <p>This takes about 5 seconds.</p>
+            </div>
+            <ol class="analyze-steps" id="analyze-steps">
+              <li class="step active">Locating home</li>
+              <li class="step">Reading façade</li>
+              <li class="step">Counting windows</li>
+              <li class="step">Estimating price</li>
+            </ol>
+            <div class="progress">
+              <div class="progress-bar" id="progress-bar"></div>
+              <span class="progress-value" id="progress-value">0%</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Quote Screen -->
+        <section class="screen screen-quote" data-screen="quote">
+          <div class="quote-wrapper">
+            <div class="quote-card primary">
+              <h2>Estimated Whole-Home Replacement</h2>
+              <div class="total">
+                <span class="total-number" id="total-windows">18</span>
+                <span class="total-label">Windows (estimated)</span>
+              </div>
+              <div class="price-range">
+                <span class="price-label">Estimated Total</span>
+                <span class="price-value" id="price-range">$17,900 – $20,200</span>
+              </div>
+              <p class="quote-note">
+                Pricing reflects typical sizes & install. Final quote may vary.
+              </p>
+            </div>
+            <div class="quote-card secondary">
+              <h3>Itemized estimate</h3>
+              <div class="insight-grid">
+                <div class="insight" data-insight="housing">
+                  <span class="insight-label">NJ housing data</span>
+                  <span class="insight-value" id="insight-housing-value">New Jersey baseline</span>
+                  <span class="insight-detail" id="insight-housing-detail">Pulling ACS housing profile…</span>
+                </div>
+                <div class="insight" data-insight="imagery">
+                  <span class="insight-label">Street View analysis</span>
+                  <span class="insight-value" id="insight-imagery-value">Awaiting imagery…</span>
+                  <span class="insight-detail" id="insight-imagery-detail">We detect façade patterns to count windows.</span>
+                </div>
+              </div>
+              <ul class="item-list" id="item-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <!-- Contact Screen -->
+        <section class="screen screen-contact" data-screen="contact">
+          <div class="contact-card">
+            <h2>Send this quote to yourself</h2>
+            <p class="contact-intro">
+              Get a copy by text or email. We’ll include helpful next steps.
+            </p>
+            <label for="contact-phone">Phone number</label>
+            <input
+              id="contact-phone"
+              type="tel"
+              inputmode="tel"
+              placeholder="(555) 123-4567"
+            />
+            <label for="contact-email">Email address</label>
+            <input id="contact-email" type="email" placeholder="you@example.com" />
+            <label class="consent">
+              <input type="checkbox" id="contact-consent" />
+              <span>OK to text/email me my quote.</span>
+            </label>
+            <div class="contact-success hidden" id="contact-success">
+              <div class="qr"></div>
+              <p>
+                Scan to open this quote on your phone. We also sent a copy to
+                your inbox.
+              </p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="bottom-bar">
+        <button class="back-button" data-action="back">Back</button>
+        <div class="cta-group" id="cta-group">
+          <button class="secondary" data-action="secondary"></button>
+          <button class="primary" data-action="primary"></button>
+        </div>
+      </footer>
+
+      <div class="modal" id="modal" aria-hidden="true">
+        <div class="modal-content">
+          <header>
+            <h3>What’s included?</h3>
+            <button class="close" data-action="close-modal" aria-label="Close">×</button>
+          </header>
+          <ul>
+            <li>Removal of existing windows</li>
+            <li>Professional installation & exterior sealing</li>
+            <li>Cleanup and haul-away</li>
+            <li>
+              Interior trim updates available on request (not included by default)
+            </li>
+          </ul>
+          <p class="modal-bullets">
+            We analyze public imagery + ZIP data • We estimate quantity & style •
+            You get a fast, itemized quote.
+          </p>
+          <p class="modal-copy">
+            Our estimates blend map imagery, roofline cues, and your ZIP’s
+            pricing trends so you know what to expect before we visit.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <script src="script.js" type="module"></script>
+  </body>
+</html>
