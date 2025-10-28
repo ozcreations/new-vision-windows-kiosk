@@ -38,14 +38,6 @@ const CTA_CONFIG = {
   },
 };
 
-const FEATURED_ADDRESSES = [
-  "25 Maple Ave, Red Bank, NJ 07701",
-  "130 Broad St, Red Bank, NJ 07701",
-  "84 Ocean Ave, Long Branch, NJ 07740",
-  "15 White St, Red Bank, NJ 07701",
-  "101 Crawfords Corner Rd, Holmdel, NJ 07733",
-];
-
 const WINDOW_TYPE_LABELS = {
   doubleHung: "Double-Hung",
   casement: "Casement",
@@ -67,8 +59,6 @@ const state = {
   contactPreference: null,
   analyzeInterval: null,
   idleTimer: null,
-  featuredPredictions: [],
-  autocompleteMode: "featured",
   sessionToken: null,
 };
 
@@ -115,7 +105,8 @@ function goto(screen, data) {
   if (screen === "address") {
     resetSessionToken();
     ensureSessionToken();
-    showFeaturedSuggestions({ force: true });
+    state.predictions = [];
+    renderAutocomplete();
   }
   resetIdleTimer();
 }
@@ -264,53 +255,6 @@ const api = {
   },
 };
 
-let featuredLoadPromise = null;
-
-function buildStaticPrediction(address) {
-  const [main, ...rest] = address.split(',');
-  return {
-    description: address,
-    structured_formatting: {
-      main_text: main?.trim() || address,
-      secondary_text: rest.join(',').trim(),
-    },
-    featured: true,
-    needsLookup: true,
-  };
-}
-
-function buildFallbackPredictions() {
-  return FEATURED_ADDRESSES.map((address) => buildStaticPrediction(address));
-}
-
-async function preloadFeaturedAddresses() {
-  if (featuredLoadPromise) return featuredLoadPromise;
-  featuredLoadPromise = (async () => {
-    const results = [];
-    for (const address of FEATURED_ADDRESSES) {
-      try {
-        const predictions = await api.autocomplete(address);
-        const normalized = address.toLowerCase();
-        const match = predictions.find((prediction) =>
-          prediction.description?.toLowerCase()?.includes(normalized)
-        );
-        if (match) {
-          results.push({ ...match, featured: true });
-        }
-      } catch (error) {
-        console.warn('Featured address lookup failed', address, error);
-      }
-    }
-    state.featuredPredictions = results.length ? results : buildFallbackPredictions();
-    if (!addressInput.value.trim()) {
-      state.predictions = [...state.featuredPredictions];
-      state.autocompleteMode = 'featured';
-      renderAutocomplete();
-    }
-  })();
-  return featuredLoadPromise;
-}
-
 async function ensurePredictionHasPlace(prediction) {
   if (prediction.place_id) return prediction;
   try {
@@ -327,36 +271,27 @@ async function ensurePredictionHasPlace(prediction) {
   }
 }
 
-function showFeaturedSuggestions({ force = false } = {}) {
-  if (!force && addressInput.value.trim()) return;
-  if (!state.featuredPredictions.length) {
-    state.featuredPredictions = buildFallbackPredictions();
-    preloadFeaturedAddresses();
-  }
-  state.predictions = [...state.featuredPredictions];
-  state.autocompleteMode = 'featured';
-  renderAutocomplete();
-}
-
 const updateSuggestions = debounce(async (value) => {
   const trimmed = value ? value.trim() : "";
   if (!trimmed || trimmed.length < 3) {
-    showFeaturedSuggestions({ force: true });
+    state.predictions = [];
+    renderAutocomplete();
     return;
   }
   try {
     const predictions = await api.autocomplete(trimmed);
     if (predictions.length) {
       state.predictions = predictions;
-      state.autocompleteMode = "search";
     } else {
-      showFeaturedSuggestions({ force: true });
+      state.predictions = [];
+      renderAutocomplete();
       return;
     }
     renderAutocomplete();
   } catch (error) {
     console.error(error);
-    showFeaturedSuggestions({ force: true });
+    state.predictions = [];
+    renderAutocomplete();
   }
 }, 250);
 
@@ -366,19 +301,10 @@ function renderAutocomplete() {
     autocompleteList.classList.remove("visible");
     return;
   }
-  if (state.autocompleteMode === "featured") {
-    const label = document.createElement("div");
-    label.className = "autocomplete-label";
-    label.textContent = "Popular New Jersey addresses";
-    autocompleteList.appendChild(label);
-  }
   state.predictions.slice(0, 6).forEach((prediction) => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "autocomplete-item";
-    if (prediction.featured) {
-      item.classList.add("featured");
-    }
     item.innerHTML = `
       <span class="line-1">${prediction.structured_formatting?.main_text || prediction.description}</span>
       <span class="line-2">${
@@ -1131,9 +1057,6 @@ function setupEvents() {
   });
 
   addressInput.addEventListener("focus", () => {
-    if (!addressInput.value.trim()) {
-      showFeaturedSuggestions({ force: true });
-    }
     if (state.predictions.length) {
       autocompleteList.classList.add("visible");
     }
@@ -1143,7 +1066,6 @@ function setupEvents() {
 function init() {
   setupEvents();
   ensureSessionToken();
-  preloadFeaturedAddresses();
   goto("intro");
   populateQuote();
   updatePreview();

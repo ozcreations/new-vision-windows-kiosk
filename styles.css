@@ -257,16 +257,6 @@ input::placeholder {
   display: block;
 }
 
-.autocomplete-label {
-  padding: 16px 24px 8px;
-  font-size: 18px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: rgba(163, 230, 53, 0.85);
-  font-weight: 600;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
 .autocomplete-item {
   padding: 20px 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -290,10 +280,6 @@ input::placeholder {
 .autocomplete-item .line-2 {
   font-size: 18px;
   opacity: 0.7;
-}
-
-.autocomplete-item.featured .line-1 {
-  color: var(--accent);
 }
 
 .autocomplete-item:last-child {

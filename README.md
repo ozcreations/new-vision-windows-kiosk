@@ -7,7 +7,6 @@ This project powers the New Vision Windows interactive kiosk. Visitors can enter
 - Intro attract loop with hero imagery and modal explainer
 - Address capture with Google Places autocomplete, ZIP fallback, and live map preview
 - Real-time analysis step that pulls Street View imagery and New Jersey housing data for pricing
-- Featured New Jersey address suggestions so guests can start with a single tap
 - Quote summary with dynamically generated window mix, price range, and CTAs
 - Contact collection with consent gating, idle reset, and confirmation state
 
