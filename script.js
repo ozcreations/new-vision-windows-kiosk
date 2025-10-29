@@ -1551,9 +1551,7 @@ function setupEvents() {
 
 function init() {
   setupEvents();
-  if (GOOGLE_MAPS_API_KEY) {
-    googleMapsLoader.load().catch((error) => console.warn(error));
-  } else {
+  if (!GOOGLE_MAPS_API_KEY) {
     console.warn("Google Maps API key not provided. Address search will be limited.");
   }
   goto("intro");
