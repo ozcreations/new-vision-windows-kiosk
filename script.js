@@ -65,6 +65,7 @@ const state = {
 const CONFIG = window.__KIOSK_CONFIG || {};
 const GOOGLE_MAPS_API_KEY = CONFIG.googleMapsApiKey || CONFIG.googleMapsKey || "";
 const GOOGLE_MAPS_LIBRARIES = "places";
+const housingCache = new Map();
 
 const googleMapsLoader = createGoogleMapsLoader();
 let autocompleteService = null;
@@ -791,6 +792,9 @@ function normalizeQuotePayload(params = {}) {
 
 async function fetchHousingStats(zip) {
   if (!zip || !/^\d{5}$/.test(zip)) return null;
+  if (housingCache.has(zip)) {
+    return housingCache.get(zip);
+  }
   const apiUrl = new URL("https://api.census.gov/data/2021/acs/acs5");
   apiUrl.searchParams.set(
     "get",
@@ -811,6 +815,7 @@ async function fetchHousingStats(zip) {
     ].join(",")
   );
   apiUrl.searchParams.set("for", `zip code tabulation area:${zip}`);
+  apiUrl.searchParams.set("in", "state:34");
 
   const response = await fetch(apiUrl.toString());
   if (!response.ok) {
@@ -831,7 +836,7 @@ async function fetchHousingStats(zip) {
   const attached = toNumber(values[4]);
   const smallMulti = toNumber(values[5]);
 
-  return {
+  const profile = {
     label: values[0],
     zip,
     medianYearBuilt: toNumber(values[1]),
@@ -842,6 +847,8 @@ async function fetchHousingStats(zip) {
     medianRooms: toNumber(values[6]),
     olderHomeShare: totalUnits && olderUnits ? olderUnits / totalUnits : null,
   };
+  housingCache.set(zip, profile);
+  return profile;
 }
 
 function buildAnalysisFromPayload(payload = {}) {
