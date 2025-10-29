@@ -1,0 +1,12 @@
+{
+  "name": "new-vision-windows-kiosk",
+  "version": "1.0.0",
+  "description": "Kiosk experience for New Vision Windows instant quote",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["kiosk", "windows", "quote"],
+  "author": "",
+  "license": "MIT"
+}
