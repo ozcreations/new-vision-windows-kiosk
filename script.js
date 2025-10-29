@@ -64,13 +64,12 @@ const state = {
 
 const CONFIG = window.__KIOSK_CONFIG || {};
 const GOOGLE_MAPS_API_KEY = CONFIG.googleMapsApiKey || CONFIG.googleMapsKey || "";
-const GOOGLE_MAPS_LIBRARIES = "places";
 const housingCache = new Map();
 
-const googleMapsLoader = createGoogleMapsLoader();
-let autocompleteService = null;
-let placesService = null;
-let placesServiceElement = null;
+const GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete";
+const GOOGLE_PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places/";
+const GOOGLE_PLACES_AUTOCOMPLETE_FIELDS = "predictions.placeId,predictions.text,predictions.structuredFormat";
+const GOOGLE_PLACES_DETAILS_FIELDS = "formattedAddress,addressComponents,location";
 
 const app = document.querySelector(".app");
 const screens = Array.from(document.querySelectorAll(".screen"));
@@ -102,80 +101,9 @@ const contactPhone = document.getElementById("contact-phone");
 const contactEmail = document.getElementById("contact-email");
 const contactIntro = document.querySelector(".contact-intro");
 
-function createGoogleMapsLoader() {
-  let promise = null;
-  return {
-    load() {
-      if (window.google?.maps?.places) {
-        return Promise.resolve(window.google.maps);
-      }
-      if (!GOOGLE_MAPS_API_KEY) {
-        return Promise.reject(new Error("Missing Google Maps API key"));
-      }
-      if (!promise) {
-        promise = new Promise((resolve, reject) => {
-          const callbackName = `__googleMapsReady_${Date.now()}`;
-          window[callbackName] = () => {
-            resolve(window.google.maps);
-            delete window[callbackName];
-          };
-          const script = document.createElement("script");
-          script.src =
-            `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
-              GOOGLE_MAPS_API_KEY
-            )}&libraries=${encodeURIComponent(GOOGLE_MAPS_LIBRARIES)}&callback=${callbackName}`;
-          script.async = true;
-          script.defer = true;
-          script.onerror = () => {
-            delete window[callbackName];
-            reject(new Error("Failed to load Google Maps JavaScript API"));
-          };
-          document.head.appendChild(script);
-        }).catch((error) => {
-          promise = null;
-          throw error;
-        });
-      }
-      return promise;
-    },
-  };
-}
-
-async function getAutocompleteService() {
-  await googleMapsLoader.load();
-  if (!window.google?.maps?.places) {
-    throw new Error("Google Maps Places library unavailable");
-  }
-  if (!autocompleteService) {
-    autocompleteService = new window.google.maps.places.AutocompleteService();
-  }
-  return autocompleteService;
-}
-
-async function getPlacesService() {
-  await googleMapsLoader.load();
-  if (!window.google?.maps?.places) {
-    throw new Error("Google Maps Places library unavailable");
-  }
-  if (!placesServiceElement) {
-    placesServiceElement = document.createElement("div");
-  }
-  if (!placesService) {
-    placesService = new window.google.maps.places.PlacesService(placesServiceElement);
-  }
-  return placesService;
-}
-
-function getPlacesStatusConstants() {
-  return window.google?.maps?.places?.PlacesServiceStatus || {};
-}
-
 function getSessionToken() {
-  if (!window.google?.maps?.places?.AutocompleteSessionToken) {
-    return null;
-  }
   if (!state.sessionToken) {
-    state.sessionToken = new window.google.maps.places.AutocompleteSessionToken();
+    state.sessionToken = createSessionToken();
   }
   return state.sessionToken;
 }
@@ -192,7 +120,6 @@ function goto(screen, data) {
   }
   if (screen === "address") {
     resetSessionToken();
-    googleMapsLoader.load().catch((error) => console.warn(error));
     state.predictions = [];
     renderAutocomplete();
   }
@@ -306,66 +233,75 @@ function resetSessionToken() {
 const api = {
   async autocomplete(input) {
     if (!input || input.length < 3) return [];
-    const service = await getAutocompleteService();
+    if (!GOOGLE_MAPS_API_KEY) {
+      throw new Error("Google Maps API key is required for autocomplete");
+    }
     const token = getSessionToken();
-    return new Promise((resolve, reject) => {
-      const request = {
+    const response = await fetch(GOOGLE_PLACES_AUTOCOMPLETE_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": GOOGLE_PLACES_AUTOCOMPLETE_FIELDS,
+      },
+      body: JSON.stringify({
         input: input.trim(),
-        componentRestrictions: { country: "us" },
-        types: ["address"],
-      };
-      if (token) {
-        request.sessionToken = token;
-      }
-      service.getPlacePredictions(request, (predictions, status) => {
-        const statuses = getPlacesStatusConstants();
-        if (status === statuses.OK) {
-          resolve(predictions || []);
-        } else if (status === statuses.ZERO_RESULTS) {
-          resolve([]);
-        } else {
-          reject(new Error(`Places autocomplete error: ${status}`));
-        }
-      });
+        languageCode: "en",
+        sessionToken: token,
+        includedRegionCodes: ["us"],
+        includedPrimaryTypes: ["street_address", "premise", "subpremise"],
+      }),
     });
+    if (!response.ok) {
+      throw new Error(`Places autocomplete error: ${response.status}`);
+    }
+    const data = await response.json();
+    const predictions = Array.isArray(data?.predictions) ? data.predictions : [];
+    return predictions.map(normalizeAutocompletePrediction).filter(Boolean);
   },
   async placeDetails(placeId) {
     if (!placeId) {
       throw new Error("Missing placeId");
     }
-    const service = await getPlacesService();
+    if (!GOOGLE_MAPS_API_KEY) {
+      throw new Error("Google Maps API key is required for place details");
+    }
     const token = getSessionToken();
-    return new Promise((resolve, reject) => {
-      const request = {
-        placeId,
-        fields: ["formatted_address", "address_component", "geometry", "place_id"],
-      };
-      if (token) {
-        request.sessionToken = token;
-      }
-      service.getDetails(request, (result, status) => {
-        const statuses = getPlacesStatusConstants();
-        if (status !== statuses.OK || !result) {
-          reject(new Error(`Place details error: ${status}`));
-          return;
-        }
-        const components = result.address_components || result.address_component;
-        const location = result.geometry?.location;
-        const lat = typeof location?.lat === "function" ? location.lat() : location?.lat ?? null;
-        const lng = typeof location?.lng === "function" ? location.lng() : location?.lng ?? null;
-        resolve({
-          place_id: result.place_id,
-          formatted_address: result.formatted_address,
-          zip: extractComponent(components, "postal_code"),
-          city: extractComponent(components, "locality"),
-          state: extractComponent(components, "administrative_area_level_1"),
-          location: {
-            lat: typeof lat === "number" ? lat : null,
-            lng: typeof lng === "number" ? lng : null,
-          },
-        });
-      });
+    const detailsUrl = new URL(
+      `${GOOGLE_PLACES_DETAILS_URL}${encodeURIComponent(placeId)}`
+    );
+    detailsUrl.searchParams.set("languageCode", "en");
+    if (token) {
+      detailsUrl.searchParams.set("sessionToken", token);
+    }
+    const response = await fetch(detailsUrl.toString(), {
+      headers: {
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": GOOGLE_PLACES_DETAILS_FIELDS,
+      },
     });
+    if (!response.ok) {
+      throw new Error(`Place details error: ${response.status}`);
+    }
+    const result = await response.json();
+    if (!result) {
+      throw new Error("Place details empty response");
+    }
+    const components = normalizeAddressComponents(result.addressComponents);
+    const lat = toNumber(result.location?.latitude);
+    const lng = toNumber(result.location?.longitude);
+    return {
+      place_id: placeId,
+      formatted_address:
+        result.formattedAddress || result.shortFormattedAddress || result.displayName?.text || "",
+      zip: extractComponent(components, "postal_code"),
+      city: extractComponent(components, "locality") || extractComponent(components, "sublocality"),
+      state: extractComponent(components, "administrative_area_level_1"),
+      location: {
+        lat: Number.isFinite(lat) ? lat : null,
+        lng: Number.isFinite(lng) ? lng : null,
+      },
+    };
   },
   async quote(params) {
     const payload = normalizeQuotePayload(params);
@@ -390,12 +326,52 @@ const api = {
   },
 };
 
+function createSessionToken() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeAutocompletePrediction(prediction) {
+  if (!prediction) return null;
+  const mainText = prediction.structuredFormat?.mainText?.text || prediction.text?.text || "";
+  const secondaryText = prediction.structuredFormat?.secondaryText?.text || "";
+  const description = prediction.text?.text || [mainText, secondaryText].filter(Boolean).join(", ");
+  return {
+    place_id: prediction.placeId,
+    description,
+    structured_formatting: {
+      main_text: mainText,
+      secondary_text: secondaryText,
+    },
+  };
+}
+
+function normalizeAddressComponents(components) {
+  if (!Array.isArray(components)) return [];
+  return components.map((component) => ({
+    long_name: normalizeAddressComponentValue(component.longText ?? component.long_name),
+    short_name: normalizeAddressComponentValue(component.shortText ?? component.short_name),
+    types: Array.isArray(component.types) ? component.types : [],
+  }));
+}
+
+function normalizeAddressComponentValue(value) {
+  if (typeof value === "string") return value;
+  if (value == null) return null;
+  return String(value);
+}
+
 async function ensurePredictionHasPlace(prediction) {
+  if (!prediction) return null;
   if (prediction.place_id) return prediction;
   try {
     const matches = await api.autocomplete(prediction.description);
-    const normalized = prediction.description.toLowerCase();
-    const resolved = matches.find((item) => item.description?.toLowerCase() === normalized);
+    const normalized = (prediction.description || "").toLowerCase();
+    const resolved = normalized
+      ? matches.find((item) => item.description?.toLowerCase() === normalized)
+      : null;
     if (resolved) {
       return resolved;
     }
@@ -416,7 +392,7 @@ const updateSuggestions = debounce(async (value) => {
   try {
     const predictions = await api.autocomplete(trimmed);
     if (predictions.length) {
-      state.predictions = predictions;
+      state.predictions = predictions.filter(Boolean);
     } else {
       state.predictions = [];
       renderAutocomplete();
@@ -1122,7 +1098,7 @@ function extractComponent(components, type) {
   if (!Array.isArray(components)) return null;
   const match = components.find((component) => component.types?.includes(type));
   if (!match) return null;
-  return match.long_name || match.short_name || null;
+  return match.long_name || match.short_name || match.longText || match.shortText || null;
 }
 
 async function analyzeStreetImagery(lat, lng) {

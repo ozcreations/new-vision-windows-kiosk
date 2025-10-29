@@ -12,7 +12,7 @@ This project powers the New Vision Windows interactive kiosk. Visitors can enter
 
 ## Prerequisites
 
-The kiosk calls live Google Maps services directly from the browser. Provide a Google Maps JavaScript API key that also has access to the Static Maps and Street View Static APIs:
+The kiosk calls live Google Maps services directly from the browser. Provide a Google Maps Platform API key with the following APIs enabled: Places API (New) for autocomplete and place lookups, plus Static Maps and Street View Static for imagery:
 
 1. Copy `config.example.js` to `config.js`.
 2. Replace the `googleMapsApiKey` value with your key (restrict it to the kiosk domain before deployment).
